@@ -1,5 +1,5 @@
 // ==========================================
-// HybridOS - Virtual File System
+// HybridOS - Virtual File System (Fixed)
 // ==========================================
 
 // Types de base
@@ -56,6 +56,11 @@ fs_node_t fs_nodes[MAX_FILES];
 int fs_node_count = 0;
 char file_data_pool[MAX_FILES * MAX_FILE_SIZE];
 int file_data_used = 0;
+
+// ==================== FORWARD DECLARATIONS ====================
+fs_node_t* fs_find_child(fs_node_t* parent, const char* name);
+fs_node_t* fs_resolve_path(const char* path);
+void fs_get_path(fs_node_t* node, char* buffer);
 
 // ==================== I/O FUNCTIONS ====================
 static inline void outb(uint16_t port, uint8_t val) {
@@ -166,6 +171,17 @@ void term_setcolor(uint8_t color) {
 }
 
 // ==================== FILE SYSTEM IMPLEMENTATION ====================
+fs_node_t* fs_find_child(fs_node_t* parent, const char* name) {
+    if (!parent || parent->type != FS_DIRECTORY) return NULL;
+    
+    for (int i = 0; i < parent->child_count; i++) {
+        if (strcmp(parent->children[i]->name, name) == 0) {
+            return parent->children[i];
+        }
+    }
+    return NULL;
+}
+
 fs_node_t* fs_create_node(const char* name, fs_node_type type, fs_node_t* parent) {
     if (fs_node_count >= MAX_FILES) return NULL;
     
@@ -176,10 +192,10 @@ fs_node_t* fs_create_node(const char* name, fs_node_type type, fs_node_t* parent
     node->content = NULL;
     node->parent = parent;
     node->child_count = 0;
-    node->permissions = 0755;  // rwxr-xr-x
+    node->permissions = 0x75;  // Fixed: Use smaller value that fits in uint8_t
     
     // Add to parent
-    if (parent) {
+    if (parent && parent->child_count < MAX_FILES) {
         parent->children[parent->child_count++] = node;
     }
     
@@ -208,19 +224,23 @@ void fs_init() {
         fs_node_t* motd = fs_create_node("motd", FS_FILE, etc);
         if (motd) {
             const char* motd_content = "Welcome to HybridOS!\nThe future of computing.\n";
-            motd->content = &file_data_pool[file_data_used];
-            strcpy(motd->content, motd_content);
-            motd->size = strlen(motd_content);
-            file_data_used += motd->size + 1;
+            if (file_data_used + strlen(motd_content) + 1 < sizeof(file_data_pool)) {
+                motd->content = &file_data_pool[file_data_used];
+                strcpy(motd->content, motd_content);
+                motd->size = strlen(motd_content);
+                file_data_used += motd->size + 1;
+            }
         }
         
         fs_node_t* version = fs_create_node("version", FS_FILE, etc);
         if (version) {
             const char* ver_content = "HybridOS v1.0\nKernel: 5.0-hybrid\n";
-            version->content = &file_data_pool[file_data_used];
-            strcpy(version->content, ver_content);
-            version->size = strlen(ver_content);
-            file_data_used += version->size + 1;
+            if (file_data_used + strlen(ver_content) + 1 < sizeof(file_data_pool)) {
+                version->content = &file_data_pool[file_data_used];
+                strcpy(version->content, ver_content);
+                version->size = strlen(ver_content);
+                file_data_used += version->size + 1;
+            }
         }
     }
     
@@ -232,24 +252,15 @@ void fs_init() {
             fs_node_t* readme = fs_create_node("readme.txt", FS_FILE, user);
             if (readme) {
                 const char* readme_content = "Your files go here!\n";
-                readme->content = &file_data_pool[file_data_used];
-                strcpy(readme->content, readme_content);
-                readme->size = strlen(readme_content);
-                file_data_used += readme->size + 1;
+                if (file_data_used + strlen(readme_content) + 1 < sizeof(file_data_pool)) {
+                    readme->content = &file_data_pool[file_data_used];
+                    strcpy(readme->content, readme_content);
+                    readme->size = strlen(readme_content);
+                    file_data_used += readme->size + 1;
+                }
             }
         }
     }
-}
-
-fs_node_t* fs_find_child(fs_node_t* parent, const char* name) {
-    if (!parent || parent->type != FS_DIRECTORY) return NULL;
-    
-    for (int i = 0; i < parent->child_count; i++) {
-        if (strcmp(parent->children[i]->name, name) == 0) {
-            return parent->children[i];
-        }
-    }
-    return NULL;
 }
 
 fs_node_t* fs_resolve_path(const char* path) {
@@ -397,6 +408,7 @@ void cmd_ls(const char* path) {
 void cmd_cd(const char* path) {
     if (!path || !*path) {
         current_dir = fs_root;
+        strcpy(current_path, "/");
         return;
     }
     
@@ -465,8 +477,7 @@ void cmd_touch(const char* name) {
     // Check if already exists
     fs_node_t* existing = fs_find_child(current_dir, name);
     if (existing) {
-        // Just update timestamp (not implemented)
-        return;
+        return; // Just update timestamp (not implemented)
     }
     
     fs_node_t* new_file = fs_create_node(name, FS_FILE, current_dir);
@@ -534,19 +545,21 @@ void cmd_echo(const char* args) {
             
             if (file && file->type == FS_FILE) {
                 // Allocate content if needed
-                if (!file->content) {
-                    file->content = &file_data_pool[file_data_used];
-                }
-                
-                // Copy content
                 size_t len = strlen(args);
                 while (len > 0 && args[len-1] == ' ') len--;  // Trim trailing spaces
                 
-                memcpy(file->content, args, len);
-                file->content[len] = '\n';
-                file->content[len + 1] = '\0';
-                file->size = len + 1;
-                file_data_used = (file->content - file_data_pool) + file->size + 1;
+                if (file_data_used + len + 2 < sizeof(file_data_pool)) {
+                    if (!file->content) {
+                        file->content = &file_data_pool[file_data_used];
+                    }
+                    
+                    // Copy content
+                    memcpy(file->content, args, len);
+                    file->content[len] = '\n';
+                    file->content[len + 1] = '\0';
+                    file->size = len + 1;
+                    file_data_used = (file->content - file_data_pool) + file->size + 1;
+                }
             } else {
                 term_setcolor(0x0C);
                 term_write("echo: cannot write to '");
@@ -589,7 +602,6 @@ void cmd_rm(const char* filename) {
             }
             current_dir->child_count--;
             
-            // Don't actually free memory (simple implementation)
             return;
         }
     }
